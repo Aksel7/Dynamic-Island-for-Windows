@@ -38,10 +38,13 @@ if (-not ($settings.PSObject.Properties.Name -contains 'hooks')) {
     $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
 }
 
+# Shell form (one command string, no "args"): works whether Claude Code runs
+# hooks through Git Bash or PowerShell, and on versions without exec-form hooks.
+# Forward slashes keep the path intact under Git Bash.
+$hookPathForShell = $hookTarget -replace '\\', '/'
 $handler = [pscustomobject]@{
     type    = 'command'
-    command = 'powershell.exe'
-    args    = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $hookTarget)
+    command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$hookPathForShell`""
     timeout = 10
 }
 
@@ -50,7 +53,7 @@ foreach ($eventName in @('UserPromptSubmit', 'PostToolUse', 'Notification', 'Sto
     if ($settings.hooks.PSObject.Properties.Name -contains $eventName) {
         # Keep everything that isn't ours, so re-running never duplicates.
         foreach ($group in @($settings.hooks.$eventName)) {
-            $kept = @($group.hooks | Where-Object { -not (($_.args -join ' ') -match 'island-hook\.ps1') })
+            $kept = @($group.hooks | Where-Object { -not ((([string]$_.command) + ' ' + ($_.args -join ' ')) -match 'island-hook\.ps1') })
             if ($kept.Count -gt 0) {
                 $group.hooks = $kept
                 $groups += $group

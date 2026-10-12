@@ -6226,6 +6226,8 @@ void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
             }
         }
     }
+    Wh_Log(L"Mail: notification from \"%s\" (path %d) -> %s", app.c_str(), sourcePath,
+           matched ? L"counted" : L"ignored (not in Mail apps)");
     if (!matched) {
         return;
     }
@@ -6303,6 +6305,10 @@ DWORD WINAPI ClaudeStatusThreadProc(void*) {
             lastPath = path;
             lastWrite = {};
             firstRead = true;
+            Wh_Log(L"Claude: watching %s (%s)", path.c_str(),
+                   GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES
+                       ? L"not found yet - is the Claude Code hook installed?"
+                       : L"found");
         }
 
         WIN32_FILE_ATTRIBUTE_DATA attr = {};
@@ -6343,7 +6349,12 @@ DWORD WINAPI ClaudeStatusThreadProc(void*) {
             }
 
             JsonValue root;
-            if (!text.empty() && JsonReader(text).Parse(&root) && root.type == JsonValue::Type::Object) {
+            const bool parsed = !text.empty() && JsonReader(text).Parse(&root) &&
+                                root.type == JsonValue::Type::Object;
+            if (!parsed && !text.empty()) {
+                Wh_Log(L"Claude: status file is not valid JSON yet (%u bytes)", static_cast<unsigned>(text.size()));
+            }
+            if (parsed) {
                 lastWrite = attr.ftLastWriteTime;
 
                 ClaudeStatusSnapshot next;
