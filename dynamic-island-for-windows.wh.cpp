@@ -1416,6 +1416,7 @@ struct BitmapPixels {
     UINT width = 0;
     UINT height = 0;
     uint64_t generation = 0;
+    uint64_t sourceHash = 0;  // FNV-1a of the encoded bytes it was decoded from (0 = unknown)
     D2D1_COLOR_F sampledAccent = D2D1::ColorF(0x4cc9f0);
 };
 
@@ -4809,6 +4810,20 @@ RECT GetIslandDockRect() {
     return r;
 }
 
+// FNV-1a over encoded image bytes, so an unchanged thumbnail is not decoded again.
+uint64_t HashImageBytes(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint8_t b : bytes) {
+        h = (h ^ b) * 1099511628211ull;
+    }
+    return h ? h : 1;
+}
+
+// Album art and icons are drawn at most a few hundred pixels wide even at large
+// scales, so they are decoded straight to this size (longest side) instead of
+// keeping a full-resolution copy.
+constexpr UINT kMaxDecodedImageDim = 512;
+
 bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* outPixels) {
     if (!outPixels || bytes.empty()) {
         return false;
@@ -4866,18 +4881,36 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
     UINT width = 0;
     UINT height = 0;
     converter->GetSize(&width, &height);
-    if (!width || !height || width > 2048 || height > 2048) {
+    if (!width || !height || width > 16384 || height > 16384) {
         return false;
+    }
+
+    // Downscale in the decoder when the source is larger than it will ever be drawn.
+    ComPtr<IWICBitmapSource> source = converter;
+    if (width > kMaxDecodedImageDim || height > kMaxDecodedImageDim) {
+        const double k = static_cast<double>(kMaxDecodedImageDim) / std::max(width, height);
+        const UINT w = std::max<UINT>(1, static_cast<UINT>(width * k + 0.5));
+        const UINT h = std::max<UINT>(1, static_cast<UINT>(height * k + 0.5));
+        ComPtr<IWICBitmapScaler> scaler;
+        if (SUCCEEDED(factory->CreateBitmapScaler(&scaler)) &&
+            SUCCEEDED(scaler->Initialize(converter.Get(), w, h, WICBitmapInterpolationModeFant))) {
+            source = scaler;
+            width = w;
+            height = h;
+        } else if (width > 2048 || height > 2048) {
+            return false;  // no scaler and too big to keep at full size
+        }
     }
 
     BitmapPixels pixels;
     pixels.width = width;
     pixels.height = height;
+    pixels.sourceHash = HashImageBytes(bytes);
     pixels.bgra.resize(static_cast<size_t>(width) * height * 4);
 
-    hr = converter->CopyPixels(nullptr, width * 4,
-                               static_cast<UINT>(pixels.bgra.size()),
-                               pixels.bgra.data());
+    hr = source->CopyPixels(nullptr, width * 4,
+                            static_cast<UINT>(pixels.bgra.size()),
+                            pixels.bgra.data());
     if (FAILED(hr)) {
         return false;
     }
@@ -6074,7 +6107,14 @@ DWORD WINAPI MediaThreadProc(void*) {
                         next.artChangedAt = prevArtChangedAt;
                     } else if (auto thumbnail = properties.Thumbnail()) {
                         std::vector<uint8_t> bytes = ReadWinRtStreamBytes(thumbnail);
-                        if (!bytes.empty()) {
+                        if (!bytes.empty() && prevArt && prevArt->sourceHash != 0 &&
+                            prevArt->sourceHash == HashImageBytes(bytes)) {
+                            // Same artwork bytes as last poll (common during the
+                            // settle window): keep the decoded copy.
+                            next.art = prevArt;
+                            next.artGeneration = prevArtGeneration;
+                            next.artChangedAt = prevArtChangedAt;
+                        } else if (!bytes.empty()) {
                             BitmapPixels decoded;
                             if (DecodeImageBytesToPixels(bytes, &decoded)) {
                                 next.art = PixelsRef(std::move(decoded));
