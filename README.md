@@ -4,6 +4,22 @@ A smooth, interactive overlay for your desktop, inspired by Apple's Dynamic Isla
 
 ---
 
+## 🍴 About this fork
+
+This is a personal fork of [devcode90/Dynamic-Island-for-Windows](https://github.com/devcode90/Dynamic-Island-for-Windows). It tracks upstream (currently v1.4.0) and adds a few small extras on top. Everything else, including the features, settings and credits below, comes from the original project.
+
+**What the fork adds**
+
+- **New Claude conversation:** a right-click menu entry on the island that opens a fresh chat at [claude.ai/new](https://claude.ai/new). It opens the Claude desktop app if it handles claude.ai links, otherwise your default browser.
+
+**Planned**
+
+- Extra tabs for Todoist tasks, mail and Claude.
+
+**Staying in sync:** the fork is updated from upstream `main` regularly, and the extras are kept small to make that easy. For bugs in the base mod, please use the [upstream issue tracker](https://github.com/devcode90/Dynamic-Island-for-Windows/issues).
+
+---
+
 ## 📸 See it in Action
 
 <p align="center">
