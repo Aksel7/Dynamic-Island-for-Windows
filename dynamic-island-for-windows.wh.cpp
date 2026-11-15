@@ -558,6 +558,9 @@ We love community contributions! To ensure high-quality updates, please follow t
   - ClaudeStatusFile: "%USERPROFILE%\\.claude\\island-status.json"
     $name: Claude status file
     $description: JSON file written by the Claude Code hook. Environment variables are expanded.
+  - ClaudeNewChatButton: true
+    $name: New Claude conversation button
+    $description: Small + button in the top-right corner of the first tab (clock or media player) of the expanded island. Click it to start a new conversation at claude.ai/new.
   - GameOverlayShowFps: true
     $name: Game overlay - show FPS
     $description: Include the frame rate in the game overlay strip.
@@ -1380,6 +1383,7 @@ struct Settings {
     std::wstring mailOpenTarget;
     bool claudeModule = false;
     std::wstring claudeStatusFile;       // environment variables already expanded
+    bool claudeNewChatButton = true;     // "+" on the first tab
 
     // ── Game overlay options (#25) ───────────────────────────────────────────
     bool gameOverlayShowFps = true;
@@ -1906,6 +1910,7 @@ std::atomic<int> g_hoveredSourceSlot{-1};
 std::atomic<int> g_pressedSourceSlot{-1};
 std::atomic<int> g_hoveredFileTrayRow = -1;  // row index under the cursor on the File Tray card
 std::atomic<int> g_todoistScroll = 0;        // first task shown in the Todoist list (wheel-scrollable)
+std::atomic<bool> g_claudeButtonHovered{false};  // cursor over the "+" new-conversation button
 std::atomic<int> g_hoveredFileTrayAction = -1;  // -2 = bin, -3 = paste, -4 = previous page, -5 = next page, >=0 = cut button of that row
 std::atomic<int> g_fileTrayScroll{0};           // index of the first visible row (newest-first order)
 std::atomic<bool> g_fileTrayPagerOn{true};      // Modules.FileTrayNavigation: pager shown
@@ -2188,6 +2193,39 @@ int ClaudeTabIndex(const Settings& settings) {
     return settings.claudeModule ? IntegrationTabBase(settings) + (settings.todoistModule ? 1 : 0) +
                                        (settings.mailModule ? 1 : 0)
                                  : -1;
+}
+
+// "+" new Claude conversation button, top-right of the first tab (content space).
+namespace ClaudeButtonLayout {
+    constexpr float kRadius = 10.0f;
+    constexpr float kInsetRight = 24.0f;  // from the content's right edge to the centre
+    constexpr float kCenterY = 22.0f;
+    constexpr float kHitPad = 4.0f;
+}
+
+bool ClaudeButtonVisible(const Settings& settings) {
+    return settings.claudeNewChatButton && NormalizedTabIndex(settings) == 0;
+}
+
+bool ClaudeButtonHitTest(const MediaContentPoint& pt) {
+    if (!pt.valid || pt.height <= MediaLayout::kExpandedMinHeight) {
+        return false;
+    }
+    const float cx = pt.width - ClaudeButtonLayout::kInsetRight;
+    const float r = ClaudeButtonLayout::kRadius + ClaudeButtonLayout::kHitPad;
+    const float dx = pt.x - cx;
+    const float dy = pt.y - ClaudeButtonLayout::kCenterY;
+    return dx * dx + dy * dy <= r * r;
+}
+
+// Opens a fresh chat in Claude (the desktop app when it handles claude.ai
+// links, otherwise the default browser). Used by the button and the menu.
+void OpenNewClaudeConversation() {
+    HINSTANCE result = ShellExecuteW(nullptr, L"open", L"https://claude.ai/new",
+                                     nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        Wh_Log(L"Failed to open a new Claude conversation.");
+    }
 }
 
 // Largest valid first-row offset for a Todoist list of `count` tasks shown in a
@@ -3499,6 +3537,7 @@ void LoadSettings() {
         }
     }
     next.claudeModule = Wh_GetIntSetting(L"Modules.ClaudeModule") != 0;
+    next.claudeNewChatButton = Wh_GetIntSetting(L"Modules.ClaudeNewChatButton") != 0;
     {
         std::wstring raw = GetStringSettingCopy(L"Modules.ClaudeStatusFile");
         if (raw.empty()) {
@@ -13810,16 +13849,9 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
         case 44:
             StartSongRecognition(hwnd);
             break;
-        case 45: {
-            // Opens a fresh chat in Claude (the desktop app when it handles
-            // claude.ai links, otherwise the default browser).
-            HINSTANCE result = ShellExecuteW(nullptr, L"open", L"https://claude.ai/new",
-                                             nullptr, nullptr, SW_SHOWNORMAL);
-            if (reinterpret_cast<INT_PTR>(result) <= 32) {
-                Wh_Log(L"Failed to open a new Claude conversation.");
-            }
+        case 45:
+            OpenNewClaudeConversation();
             break;
-        }
         case 42:
             PasteIntoFileTray(hwnd);
             break;
@@ -16570,6 +16602,32 @@ class Renderer {
     // right, then rows built from DrawCard. Todoist rows share FileTrayLayout so
     // the existing row hit test works for them unchanged.
 
+    // "+" new Claude conversation button (see ClaudeButtonLayout).
+    void DrawClaudeNewChatButton(D2D1_RECT_F rect, float scale) {
+        const D2D1_POINT_2F c = D2D1::Point2F(rect.right - ClaudeButtonLayout::kInsetRight * scale,
+                                              rect.top + ClaudeButtonLayout::kCenterY * scale);
+        const float r = ClaudeButtonLayout::kRadius * scale;
+        const bool hovered = g_claudeButtonHovered.load(std::memory_order_relaxed);
+        ComPtr<ID2D1SolidColorBrush> bg;
+        target_->CreateSolidColorBrush(
+            hovered ? WithAlpha(material_.accent, 0.28f * settingsOpacity_)
+                    : WithAlpha(material_.raisedStrong, material_.raisedStrong.a * settingsOpacity_),
+            &bg);
+        ComPtr<ID2D1SolidColorBrush> ink;
+        target_->CreateSolidColorBrush(
+            hovered ? WithAlpha(material_.accent, 0.95f * settingsOpacity_)
+                    : WithAlpha(material_.textSecondary, 0.75f * settingsOpacity_),
+            &ink);
+        if (!bg || !ink) {
+            return;
+        }
+        target_->FillEllipse(D2D1::Ellipse(c, r, r), bg.Get());
+        const float arm = r * 0.45f;
+        const float stroke = 1.6f * scale;
+        target_->DrawLine(D2D1::Point2F(c.x - arm, c.y), D2D1::Point2F(c.x + arm, c.y), ink.Get(), stroke);
+        target_->DrawLine(D2D1::Point2F(c.x, c.y - arm), D2D1::Point2F(c.x, c.y + arm), ink.Get(), stroke);
+    }
+
     void DrawIntegrationHeader(D2D1_RECT_F rect, float scale, const std::wstring& title,
                                const std::wstring& right, const D2D1_COLOR_F* rightColor) {
         const float padX = FileTrayLayout::kPadX * scale;
@@ -18045,6 +18103,9 @@ class Renderer {
             });
 
             DrawTabPagination(fullRect, maxTabs);
+            if (ClaudeButtonVisible(settings)) {
+                DrawClaudeNewChatButton(fullRect, scale);
+            }
 
             if (dashFadeLayer) {
                 target_->PopLayer();
@@ -18869,6 +18930,9 @@ class Renderer {
 
             DrawTabTransition(0, tabIdx, activeTabs, rect, now, drawTabContent);
             DrawTabPagination(rect, maxTabs);
+            if (ClaudeButtonVisible(settings)) {
+                DrawClaudeNewChatButton(rect, 1.0f);
+            }
 
             target_->PopLayer();
         }
@@ -25220,6 +25284,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
 
                 const int currentTab = NormalizedTabIndex(g_settings);
+                if (ClaudeButtonVisible(g_settings) &&
+                    ClaudeButtonHitTest(MediaContentFromClient(pt.x, pt.y))) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
                 if (mediaActive && currentTab == MediaTabIndex(g_settings)) {
                     const MediaContentPoint cp = MediaContentFromClient(pt.x, pt.y);
                     const bool hoverClickable = MediaArtHitTest(cp) ||
@@ -25427,6 +25496,13 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 const int scroll = hp.valid ? ClampInt(g_todoistScroll.load(), 0, TodoistMaxScroll(count, hp.height)) : 0;
                 hoveredRow = ListRowAtContentPoint(hp, count - scroll);
             }
+            {
+                const bool overClaude = ClaudeButtonVisible(g_settings) &&
+                                        ClaudeButtonHitTest(MediaContentFromClient(xPos, yPos));
+                if (g_claudeButtonHovered.exchange(overClaude) != overClaude) {
+                    g_layoutDirty = true;
+                }
+            }
             bool trayHoverChanged = false;
             if (g_hoveredFileTrayRow.exchange(hoveredRow) != hoveredRow) {
                 trayHoverChanged = true;
@@ -25454,6 +25530,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         case WM_MOUSELEAVE:
+            if (g_claudeButtonHovered.exchange(false)) {
+                g_layoutDirty = true;
+            }
             if (g_hoveredSourceSlot.exchange(-1) != -1 || g_pressedSourceSlot.exchange(-1) != -1) {
                 g_layoutDirty = true;
             }
@@ -25594,6 +25673,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 const int currentTab = NormalizedTabIndex(g_settings);
 
                 const MediaContentPoint cp = MediaContentFromClient(xPos, yPos);
+
+                if (ClaudeButtonVisible(g_settings) && ClaudeButtonHitTest(cp)) {
+                    OpenNewClaudeConversation();
+                    return 0;
+                }
 
                 // Todoist: the circle completes the task, the rest of the row
                 // opens it in Todoist, and empty space opens today's view.
