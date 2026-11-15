@@ -12447,6 +12447,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     AppendMenuW(menu, MF_STRING, 1, L"Dismiss");
     AppendMenuW(menu, MF_STRING | (g_settings.songRecognition ? 0 : (MF_GRAYED | MF_DISABLED)), 44,
                 L"Identify song");
+    AppendMenuW(menu, MF_STRING, 45, L"New Claude conversation");
 
     HMENU timerMenu = CreatePopupMenu();
     AppendMenuW(timerMenu, MF_STRING, 30, L"Start 25 min Focus");
@@ -12798,6 +12799,16 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
         case 44:
             StartSongRecognition(hwnd);
             break;
+        case 45: {
+            // Opens a fresh chat in Claude (the desktop app when it handles
+            // claude.ai links, otherwise the default browser).
+            HINSTANCE result = ShellExecuteW(nullptr, L"open", L"https://claude.ai/new",
+                                             nullptr, nullptr, SW_SHOWNORMAL);
+            if (reinterpret_cast<INT_PTR>(result) <= 32) {
+                Wh_Log(L"Failed to open a new Claude conversation.");
+            }
+            break;
+        }
         case 42:
             PasteIntoFileTray(hwnd);
             break;
