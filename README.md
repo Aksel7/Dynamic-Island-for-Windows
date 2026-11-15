@@ -4,6 +4,22 @@ A smooth, interactive overlay for your desktop, inspired by Apple's Dynamic Isla
 
 ---
 
+## 🍴 About this fork
+
+This is a personal fork of [devcode90/Dynamic-Island-for-Windows](https://github.com/devcode90/Dynamic-Island-for-Windows). It tracks upstream (currently v1.4.0) and adds a few small extras on top. Everything else, including the features, settings and credits below, comes from the original project.
+
+**What the fork adds**
+
+- **New Claude conversation:** a right-click menu entry on the island that opens a fresh chat at [claude.ai/new](https://claude.ai/new). It opens the Claude desktop app if it handles claude.ai links, otherwise your default browser.
+
+**Planned**
+
+- Extra tabs for Todoist tasks, mail and Claude.
+
+**Staying in sync:** the fork is updated from upstream `main` regularly, and the extras are kept small to make that easy. For bugs in the base mod, please use the [upstream issue tracker](https://github.com/devcode90/Dynamic-Island-for-Windows/issues).
+
+---
+
 ## 📸 See it in Action
 
 <p align="center">
@@ -12,6 +28,22 @@ A smooth, interactive overlay for your desktop, inspired by Apple's Dynamic Isla
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/devcode90/Dynamic-Island-for-Windows/9fdd6610ff4e48928ecde99362a87f1d43afefbe/previews/Full-preview-v2.png" alt="Dynamic Island surfaces" width="760" style="border-radius: 8px; margin: 10px;"/>
+</p>
+
+### 🎵 Live Lyrics
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/devcode90/Dynamic-Island-for-Windows/main/previews/lyrics.png" alt="Live Lyrics on Dynamic Island" width="880" style="border-radius: 8px; margin: 10px;"/>
+</p>
+
+### 🪟 Real Blur & Acrylic Backdrop
+
+<p align="center">
+  <video src="https://github.com/devcode90/Dynamic-Island-for-Windows/raw/main/previews/blur.mp4" controls="controls" muted="muted" width="880" style="border-radius: 8px; margin: 10px; max-height: 480px;">
+    <a href="https://github.com/devcode90/Dynamic-Island-for-Windows/raw/main/previews/blur.mp4">
+      <img src="https://raw.githubusercontent.com/devcode90/Dynamic-Island-for-Windows/main/previews/blur-acrylic.png" alt="Dynamic Island Real Blur & Acrylic Backdrop" width="880" style="border-radius: 8px; margin: 10px;"/>
+    </a>
+  </video>
 </p>
 
 ### Dashboards
@@ -44,6 +76,11 @@ A smooth, interactive overlay for your desktop, inspired by Apple's Dynamic Isla
 
 **🚀 New Features (Added in Latest Update):**
 
+- 🎤 **Live Lyrics:** Switch on "Show lyrics on collapsed island" from the right-click menu to see the current line pan across the pill as it is sung.
+- 🎶 **Song Recognition (Shazam):** Identify any track playing on your desktop in seconds — the island listens to your system audio and displays the song title, artist, and cover art with zero API keys required.
+- 📖 **Quick Lookup:** Once enabled under Modules, press `Ctrl+Alt+Space` to open a search box right on the island to instantly find definitions or summaries for words and clipboard text.
+- 🔀 **Cross-Source Media Switching:** Smoothly swap between active playback controls of multiple media apps simultaneously without opening the apps.
+- 💾 **Lyrics Cache:** Fast, local caching of lyrics retrieved from LRCLIB (sending title, artist, album, and duration to look up matching tracks) stored in the mod's storage folder with a tiny disk footprint.
 - 📺 **Full-Screen Autohide:** Smart autohide ensures the island stays completely out of your way during full-screen apps, videos, and gaming.
 - 🙈 **Instant Hide/Unhide:** Toggle the island visibility instantly with a customizable shortcut (Default: `Ctrl+Alt+D`). It consumes almost no CPU while hidden!
 - 🕒 **Expandable Hover Clock:** Hover over the island to instantly expand a sleek clock displaying the current time and date.
@@ -81,7 +118,7 @@ Tweak the mod easily from the **Windhawk settings panel**:
 - **Style:** Choose the classic iPhone Pill look, macOS Notch, or modern Windows 11 style.
 - **Themes & Colors:** Choose built-in presets (with matching borders), set custom palette colors, or let album art dynamically tint the island. Hex colors accept an alpha channel (`#RRGGBBAA`) for a translucent island with crisp text.
 - **Depth & Material:** Toggle the layered depth shading, the specular glass edge, and the soft drop shadow, and dial the album-art accent bloom from 0 to 200%.
-- **Backdrop Material:** Turn on real Windows blur or frosted acrylic behind the island, then set how much of it shows through. Requires Windows 10 1803 or newer; on older builds the island just stays opaque.
+- **Backdrop Material:** Turn on real Windows blur or frosted acrylic behind the island, then set how much of it shows through. Requires Windows 10 1803 or newer (on older builds the island just stays opaque) and Windows' **Transparency effects** turned on, see the note below.
 - **Language:** Pick from 12 languages, or let the island follow your Windows display language.
 - **Clock & Date:** Choose 12- or 24-hour time, show seconds, promote the date above the time, and set a custom date pattern — CJK forms like `yyyy年MM月dd日` work as typed.
 - **File Tray:** Enable the shelf, then drag files onto the island to park them. Click a row to open it; right-click the island to clear it. Files are only referenced, never copied or moved.
@@ -93,8 +130,14 @@ Tweak the mod easily from the **Windhawk settings panel**:
 - **Media Pill Clock:** Optionally show the current time on the left of the collapsed media pill, using the same 12/24-hour and seconds settings as the idle clock.
 - **Volume & Brightness Flyouts:** Slider banners appear on the island when the system volume or your laptop screen brightness changes. Both can be switched off in **Modules & Features**.
 - **Modules & Visibility:** Configure media, dashboards, privacy dots, system flyouts, auto-hide idle behavior, and shortcuts.
-- **Process Inclusion (for Notifications):** To use the notification module, you must add `explorer.exe` to the process inclusion list under the **Advanced** tab of the mod settings in Windhawk, then restart the mod.
-- **Notification Permission (for Notifications):** Windows must also allow apps to read your notifications. Turn on **Settings → Privacy & security → Notifications → "Let apps access your notifications"**. If this is off, Windows denies the listener and no notification will reach the island no matter how the mod is configured. When notifications still don't show, check the mod's log in Windhawk for a "permission not granted" line.
+- **Notification Permission (for Notifications):** Windows must allow apps to read your notifications. Turn on **Settings → Privacy & security → Notifications → "Let apps access your notifications"**. If this is off, Windows denies the listener and no notification will reach the island no matter how the mod is configured. When notifications still don't show, check the mod's log in Windhawk for a "permission not granted" line. Note: notifications from command-line consoles and terminal hosts (PowerShell, cmd.exe, conhost) are filtered out by default to avoid toast spam from terminal scripts and build jobs.
+
+> [!NOTE]
+> **Blur & Acrylic need Windows' Transparency effects.**
+>
+> Windows does not enable this on every PC by default, and the Blur and Acrylic backdrop will not show without it (you will only see a flat tint instead). Turn it on in **Settings → Personalization → Colors → Transparency effects**. On Windows 11 you can also find it under **Settings → Accessibility → Visual effects → Transparency effects**.
+>
+> Also make sure **Battery saver** is off, because it disables these effects too. Then pick a material under **Mod Settings → Themes → Backdrop material**. The change applies live, no restart needed.
 
 > [!IMPORTANT]
 > **The right-click menu is per-session, not persistent configuration.**
@@ -113,7 +156,7 @@ Found a bug? Have a cool feature idea? We want to hear from you! Please drop an 
 
 ## 🙌 Shoutouts
 
-- **[Sarthak Singh (sarthakaksh)](https://github.com/sarthakaksh)**: Major feature overhaul including the right-click focus timer, hover clock, robust media controls, zero-CPU instant hide shortcut, Bluetooth battery integration, image clipboard thumbnails, and full-screen autohide fixes.
+- **[Sarthak Singh (sarthakaksh)](https://github.com/sarthakaksh)**: Major feature overhaul including smoothing animations, strip mode, lyrics for songs, song recognition (Shazam),  quick lookup, Cross-Source Media Switching, the right-click focus timer, hover clock, robust media controls, zero-CPU instant hide shortcut, Bluetooth battery integration, image clipboard thumbnails, and full-screen autohide fixes.
 - **[ciizerr](https://github.com/ciizerr)**: Massive thanks for fixing UI alignments, smoothing out the dashboard sizing, and polishing the calendar and weather tabs.
 - **[ChrisSch-dev @GitHub](https://github.com/ChrisSch-dev)**: Added album title support, word wrapping for weather descriptions, sleep resume fixes, and various performance/movement stability improvements.
 - **[thevioletto @GitHub](https://github.com/thevioletto)**: Added custom font support, Windows Do Not Disturb integration and status alerts, improved album art color extraction, reorganized settings into logical categories, and fixed various UI, media, and theme edge cases.
