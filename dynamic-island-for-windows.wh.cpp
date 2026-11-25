@@ -6,7 +6,7 @@
 // @author          Himanshu
 // @github          https://github.com/devcode90
 // @include         windhawk.exe
-// @compilerOptions -lole32 -loleaut32 -lshcore -ld2d1 -ldwrite -ldwmapi -lgdi32 -luser32 -lshell32 -lruntimeobject -lwindowscodecs -lsetupapi -lwinhttp -lpdh -lwinmm
+// @compilerOptions -lole32 -loleaut32 -lshcore -ld2d1 -ldwrite -ldwmapi -lgdi32 -luser32 -lshell32 -lruntimeobject -lwindowscodecs -lsetupapi -lwinhttp -lpdh -lwinmm -lws2_32
 // @license         MIT
 // ==/WindhawkMod==
 
@@ -552,6 +552,18 @@ We love community contributions! To ensure high-quality updates, please follow t
   - MailOpenTarget: "https://mail.google.com"
     $name: Mail tab click opens
     $description: URL or program opened when you click the Mail card. Clicking also resets the counter.
+  - MailSource: notifications
+    $name: Mail tab source
+    $description: 'Notifications: counts mail notifications from the apps above (no login). Gmail: reads your real unread count and latest unread mails through the Gmail API (read-only); needs the two Google fields below, then click the Mail card once to sign in.'
+    $options:
+      - notifications: Windows notifications
+      - gmail: Gmail account (Google API)
+  - GmailClientId: ""
+    $name: Gmail OAuth client ID
+    $description: 'Google Cloud Console > APIs & Services > Credentials > OAuth client ID of type Desktop app (Gmail API enabled).'
+  - GmailClientSecret: ""
+    $name: Gmail OAuth client secret
+    $description: The client secret shown with that Desktop client. Stored in your Windhawk settings in plain text.
   - ClaudeModule: false
     $name: Claude tab
     $description: Adds a Claude card showing the state and progress of your current Claude Code task, fed by the island-hook.ps1 hook. Also pops a pill when a task finishes or Claude is waiting for you.
@@ -650,6 +662,8 @@ We love community contributions! To ensure high-quality updates, please follow t
 #endif
 
 #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <unknwn.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -1381,6 +1395,9 @@ struct Settings {
     bool mailModule = false;
     std::vector<std::wstring> mailApps;  // lowercase
     std::wstring mailOpenTarget;
+    bool mailGmail = false;              // MailSource == gmail
+    std::wstring gmailClientId;
+    std::wstring gmailClientSecret;
     bool claudeModule = false;
     std::wstring claudeStatusFile;       // environment variables already expanded
     bool claudeNewChatButton = true;     // "+" on the first tab
@@ -1764,8 +1781,11 @@ struct MailItem {
 };
 
 struct MailSnapshot {
-    int unread = 0;               // new mail since the card was last clicked
+    int unread = 0;               // new mail since the card was last clicked (Gmail: real unread count)
     std::vector<MailItem> recent; // oldest first, capped
+    bool gmail = false;           // fed by the Gmail API instead of notifications
+    bool gmailConnected = false;  // a refresh token is stored
+    std::wstring status;          // Gmail: setup / sign-in / error message, empty when fine
 };
 
 struct ClaudeStatusSnapshot {
@@ -3161,6 +3181,8 @@ void ApplyHideShowHotkey();                 // forward declaration; defined afte
 void ApplyBackdropMaterial(HWND);           // forward declaration; defined after LoadSettings()
 void NotifyKeyboardThreadSettingChanged();  // forward declaration; defined with the keyboard hook
 void RequestTodoistRefresh();               // forward declaration; defined with the integrations
+void RequestGmailRefresh();                 // same
+void StartGmailSignIn();                    // same
 void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
                       const std::wstring& subject, int sourcePath,
                       const std::wstring& context = std::wstring());  // same
@@ -3512,6 +3534,16 @@ void LoadSettings() {
     }
     next.mailModule = Wh_GetIntSetting(L"Modules.MailModule") != 0;
     next.mailOpenTarget = GetStringSettingCopy(L"Modules.MailOpenTarget");
+    next.mailGmail = EqualsNoCase(GetStringSettingCopy(L"Modules.MailSource"), L"gmail");
+    {
+        auto trimmed = [](std::wstring v) {
+            const size_t a = v.find_first_not_of(L" \t\r\n");
+            const size_t b = v.find_last_not_of(L" \t\r\n");
+            return a == std::wstring::npos ? std::wstring() : v.substr(a, b - a + 1);
+        };
+        next.gmailClientId = trimmed(GetStringSettingCopy(L"Modules.GmailClientId"));
+        next.gmailClientSecret = trimmed(GetStringSettingCopy(L"Modules.GmailClientSecret"));
+    }
     next.mailApps.clear();
     {
         std::wstring raw = GetStringSettingCopy(L"Modules.MailApps");
@@ -3901,7 +3933,10 @@ void LoadSettings() {
     {
         std::lock_guard lock(g_settingsMutex);
         cityChanged = next.weatherCity != g_settings.weatherCity;
-        todoistChanged = next.todoistModule != g_settings.todoistModule ||
+        todoistChanged = next.mailGmail != g_settings.mailGmail ||
+                         next.mailModule != g_settings.mailModule ||
+                         next.gmailClientId != g_settings.gmailClientId ||
+                         next.todoistModule != g_settings.todoistModule ||
                          next.todoistToken != g_settings.todoistToken ||
                          next.todoistFilter != g_settings.todoistFilter;
         capsLockChanged = next.capsLock != g_settings.capsLock;
@@ -3928,6 +3963,7 @@ void LoadSettings() {
     }
     if (todoistChanged) {
         RequestTodoistRefresh();
+        RequestGmailRefresh();
     }
     // Installs or removes WH_KEYBOARD_LL to match. The keyboard thread would pick
     // this up on its next backstop tick anyway; this just makes it immediate.
@@ -9521,7 +9557,7 @@ void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
     bool matched = false;
     {
         std::lock_guard lock(g_settingsMutex);
-        if (!g_settings.mailModule) {
+        if (!g_settings.mailModule || g_settings.mailGmail) {
             return;
         }
         const std::wstring appLower = ToLowerCopy(app);
@@ -9573,6 +9609,331 @@ void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
         }
     }
     g_layoutDirty = true;
+}
+
+// ── Mail: Gmail API ──────────────────────────────────────────────────────────
+// OAuth for installed apps with a loopback redirect: a click on the Mail card
+// opens Google's consent page, a one-shot listener on 127.0.0.1 receives the
+// code, and the refresh token is kept with Wh_SetStringValue. The thread then
+// reads the INBOX unread count and the latest unread headers every minute.
+// Scope: gmail.readonly.
+
+HANDLE g_gmailThread = nullptr;
+HANDLE g_gmailWakeEvent = nullptr;
+std::atomic<bool> g_gmailSignInRunning{false};
+constexpr wchar_t kGmailTokenValue[] = L"GmailRefreshToken";
+
+void RequestGmailRefresh() {
+    if (g_gmailWakeEvent) {
+        SetEvent(g_gmailWakeEvent);
+    }
+}
+
+static std::string WideToUtf8Str(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? static_cast<size_t>(n) : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+static std::string FormEncode(const std::string& v) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : v) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 15]);
+        }
+    }
+    return out;
+}
+
+static std::string QueryParam(const std::string& query, const std::string& key) {
+    size_t pos = 0;
+    while (pos < query.size()) {
+        size_t amp = query.find('&', pos);
+        if (amp == std::string::npos) amp = query.size();
+        const std::string pair = query.substr(pos, amp - pos);
+        const size_t eq = pair.find('=');
+        if (eq != std::string::npos && pair.compare(0, eq, key) == 0) {
+            std::string raw = pair.substr(eq + 1), out;
+            for (size_t i = 0; i < raw.size(); ++i) {
+                if (raw[i] == '%' && i + 2 < raw.size()) {
+                    out.push_back(static_cast<char>(strtol(raw.substr(i + 1, 2).c_str(), nullptr, 16)));
+                    i += 2;
+                } else {
+                    out.push_back(raw[i] == '+' ? ' ' : raw[i]);
+                }
+            }
+            return out;
+        }
+        pos = amp + 1;
+    }
+    return std::string();
+}
+
+static std::wstring LoadGmailRefreshToken() {
+    wchar_t buf[2048] = {};
+    Wh_GetStringValue(kGmailTokenValue, buf, ARRAYSIZE(buf));
+    return buf;
+}
+
+static void SetGmailStatus(const std::wstring& status) {
+    {
+        std::lock_guard lock(g_stateMutex);
+        g_state.mail.status = status;
+    }
+    g_layoutDirty = true;
+}
+
+// POSTs to Google's token endpoint. Returns the parsed JSON, or false.
+static bool GoogleTokenRequest(const std::string& body, JsonValue* out, DWORD* status) {
+    const std::string resp = HttpRequest(L"POST", L"oauth2.googleapis.com", L"/token",
+                                         L"Content-Type: application/x-www-form-urlencoded\r\n", body, status);
+    return JsonReader(resp).Parse(out) && out->type == JsonValue::Type::Object;
+}
+
+// Runs the whole sign-in on its own thread. Waits up to 3 minutes for the browser.
+void StartGmailSignIn() {
+    if (g_gmailSignInRunning.exchange(true)) {
+        return;
+    }
+    std::wstring clientId, clientSecret;
+    {
+        std::lock_guard lock(g_settingsMutex);
+        clientId = g_settings.gmailClientId;
+        clientSecret = g_settings.gmailClientSecret;
+    }
+    if (clientId.empty() || clientSecret.empty()) {
+        SetGmailStatus(L"Ajoute l'ID et le secret client Google dans les réglages");
+        g_gmailSignInRunning = false;
+        return;
+    }
+
+    std::thread([clientId, clientSecret]() {
+        WSADATA wsa = {};
+        const bool wsaOk = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+        SOCKET listener = wsaOk ? socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) : INVALID_SOCKET;
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        int addrLen = sizeof(addr);
+        if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            listen(listener, 1) != 0 || getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+            if (listener != INVALID_SOCKET) closesocket(listener);
+            if (wsaOk) WSACleanup();
+            SetGmailStatus(L"Connexion Gmail impossible (port local)");
+            g_gmailSignInRunning = false;
+            return;
+        }
+        const std::string redirect = "http://127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+        char stateBuf[17] = {};
+        snprintf(stateBuf, sizeof(stateBuf), "%016llx",
+                 static_cast<unsigned long long>(GetTickCount64() * 2654435761ull ^ GetCurrentProcessId()));
+        const std::string state = stateBuf;
+
+        const std::string url = "https://accounts.google.com/o/oauth2/v2/auth?response_type=code"
+                                "&scope=" + FormEncode("https://www.googleapis.com/auth/gmail.readonly") +
+                                "&access_type=offline&prompt=consent"
+                                "&client_id=" + FormEncode(WideToUtf8Str(clientId)) +
+                                "&redirect_uri=" + FormEncode(redirect) + "&state=" + state;
+        SetGmailStatus(L"Connecte-toi dans le navigateur…");
+        ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+
+        std::string code;
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(listener, &set);
+        timeval tv = {180, 0};
+        if (select(0, &set, nullptr, nullptr, &tv) == 1) {
+            SOCKET client = accept(listener, nullptr, nullptr);
+            if (client != INVALID_SOCKET) {
+                char req[4096] = {};
+                const int n = recv(client, req, sizeof(req) - 1, 0);
+                std::string line(req, n > 0 ? static_cast<size_t>(n) : 0);
+                line = line.substr(0, line.find("\r\n"));
+                const size_t q = line.find('?');
+                const size_t sp = line.find(' ', q == std::string::npos ? 0 : q);
+                const std::string query = (q == std::string::npos) ? std::string() : line.substr(q + 1, sp - q - 1);
+                if (QueryParam(query, "state") == state) {
+                    code = QueryParam(query, "code");
+                }
+                const char* page = code.empty()
+                    ? "<html><meta charset=utf-8><body style='font-family:sans-serif'>Connexion annulée.</body></html>"
+                    : "<html><meta charset=utf-8><body style='font-family:sans-serif'>Gmail est connecté à Dynamic Island. Tu peux fermer cet onglet.</body></html>";
+                std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: " +
+                                   std::to_string(strlen(page)) + "\r\n\r\n" + page;
+                send(client, resp.data(), static_cast<int>(resp.size()), 0);
+                closesocket(client);
+            }
+        }
+        closesocket(listener);
+        WSACleanup();
+
+        if (code.empty()) {
+            SetGmailStatus(L"Connexion Gmail annulée. Clique pour réessayer");
+            g_gmailSignInRunning = false;
+            return;
+        }
+
+        const std::string body = "grant_type=authorization_code&code=" + FormEncode(code) +
+                                 "&client_id=" + FormEncode(WideToUtf8Str(clientId)) +
+                                 "&client_secret=" + FormEncode(WideToUtf8Str(clientSecret)) +
+                                 "&redirect_uri=" + FormEncode(redirect);
+        JsonValue root;
+        DWORD status = 0;
+        const std::string refresh = GoogleTokenRequest(body, &root, &status) ? root.GetString("refresh_token") : std::string();
+        if (refresh.empty()) {
+            Wh_Log(L"Gmail: token exchange failed (HTTP %lu)", status);
+            SetGmailStatus(L"Échec de la connexion Gmail (HTTP " + std::to_wstring(status) + L")");
+        } else {
+            Wh_SetStringValue(kGmailTokenValue, Utf8ToWide(refresh).c_str());
+            SetGmailStatus(L"");
+            RequestGmailRefresh();
+        }
+        g_gmailSignInRunning = false;
+    }).detach();
+}
+
+static SYSTEMTIME UnixMsToLocal(double ms) {
+    SYSTEMTIME st = {};
+    ULARGE_INTEGER t;
+    t.QuadPart = static_cast<ULONGLONG>(ms) * 10000ULL + 116444736000000000ULL;
+    FILETIME utc = {t.LowPart, t.HighPart}, local = {};
+    if (FileTimeToLocalFileTime(&utc, &local)) FileTimeToSystemTime(&local, &st);
+    return st;
+}
+
+// "Jane Doe <jane@x.com>" -> "Jane Doe".
+static std::wstring SenderName(std::wstring from) {
+    const size_t lt = from.find(L'<');
+    if (lt != std::wstring::npos && lt > 0) from = from.substr(0, lt);
+    while (!from.empty() && (from.back() == L' ' || from.back() == L'"')) from.pop_back();
+    while (!from.empty() && from.front() == L'"') from.erase(0, 1);
+    return from;
+}
+
+DWORD WINAPI GmailThreadProc(void*) {
+    WaitForSingleObject(g_stopEvent, 2500);
+    std::string accessToken;
+    double accessExpires = 0.0;
+
+    while (WaitForSingleObject(g_stopEvent, 0) == WAIT_TIMEOUT) {
+        bool enabled = false;
+        std::wstring clientId, clientSecret;
+        {
+            std::lock_guard lock(g_settingsMutex);
+            enabled = g_settings.mailModule && g_settings.mailGmail;
+            clientId = g_settings.gmailClientId;
+            clientSecret = g_settings.gmailClientSecret;
+        }
+        DWORD waitMs = 60 * 1000;
+        if (!enabled) {
+            waitMs = INFINITE;
+            if (!accessToken.empty()) {
+                accessToken.clear();
+                std::lock_guard lock(g_stateMutex);
+                g_state.mail = MailSnapshot{};  // back to the notification counter
+            }
+        } else {
+            const std::wstring refresh = LoadGmailRefreshToken();
+            {
+                std::lock_guard lock(g_stateMutex);
+                g_state.mail.gmail = true;
+                g_state.mail.gmailConnected = !refresh.empty();
+            }
+            if (clientId.empty() || clientSecret.empty()) {
+                SetGmailStatus(L"Ajoute l'ID et le secret client Google dans les réglages");
+            } else if (refresh.empty()) {
+                if (!g_gmailSignInRunning) SetGmailStatus(L"Clique ici pour connecter Gmail");
+            } else {
+                if (accessToken.empty() || NowSeconds() > accessExpires) {
+                    const std::string body = "grant_type=refresh_token&refresh_token=" + FormEncode(WideToUtf8Str(refresh)) +
+                                             "&client_id=" + FormEncode(WideToUtf8Str(clientId)) +
+                                             "&client_secret=" + FormEncode(WideToUtf8Str(clientSecret));
+                    JsonValue root;
+                    DWORD status = 0;
+                    accessToken = GoogleTokenRequest(body, &root, &status) ? root.GetString("access_token") : std::string();
+                    accessExpires = NowSeconds() + std::max(60.0, root.GetNumber("expires_in", 3600.0) - 120.0);
+                    if (accessToken.empty()) {
+                        Wh_Log(L"Gmail: refresh failed (HTTP %lu)", status);
+                        if (status == 400 || status == 401) {
+                            Wh_SetStringValue(kGmailTokenValue, L"");  // revoked or expired: sign in again
+                            SetGmailStatus(L"Session Gmail expirée. Clique pour te reconnecter");
+                        } else {
+                            SetGmailStatus(L"Gmail injoignable");
+                        }
+                    }
+                }
+                if (!accessToken.empty()) {
+                    const std::wstring headers = L"Authorization: Bearer " + Utf8ToWide(accessToken) + L"\r\n";
+                    DWORD status = 0;
+                    JsonValue label;
+                    const std::string labelResp = HttpRequest(L"GET", L"gmail.googleapis.com",
+                                                              L"/gmail/v1/users/me/labels/INBOX", headers, "", &status);
+                    if (status == 200 && JsonReader(labelResp).Parse(&label)) {
+                        const int unread = static_cast<int>(label.GetNumber("messagesUnread"));
+                        std::vector<MailItem> items;
+                        JsonValue list;
+                        const std::string listResp = HttpRequest(
+                            L"GET", L"gmail.googleapis.com",
+                            L"/gmail/v1/users/me/messages?maxResults=5&labelIds=INBOX&labelIds=UNREAD", headers, "", &status);
+                        if (status == 200 && JsonReader(listResp).Parse(&list)) {
+                            if (const JsonValue* msgs = list.Get("messages"); msgs && msgs->type == JsonValue::Type::Array) {
+                                for (const JsonValue& m : msgs->items) {
+                                    const std::wstring id = Utf8ToWide(m.GetString("id"));
+                                    if (id.empty()) continue;
+                                    JsonValue msg;
+                                    const std::string msgResp = HttpRequest(
+                                        L"GET", L"gmail.googleapis.com",
+                                        L"/gmail/v1/users/me/messages/" + id +
+                                            L"?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+                                        headers, "", &status);
+                                    if (status != 200 || !JsonReader(msgResp).Parse(&msg)) continue;
+                                    MailItem item;
+                                    item.app = L"Gmail";
+                                    const JsonValue* payload = msg.Get("payload");
+                                    const JsonValue* hdrs = payload ? payload->Get("headers") : nullptr;
+                                    if (hdrs && hdrs->type == JsonValue::Type::Array) {
+                                        for (const JsonValue& h : hdrs->items) {
+                                            const std::string name = h.GetString("name");
+                                            if (_stricmp(name.c_str(), "From") == 0) item.sender = OneLine(SenderName(Utf8ToWide(h.GetString("value"))), 60);
+                                            if (_stricmp(name.c_str(), "Subject") == 0) item.subject = OneLine(Utf8ToWide(h.GetString("value")), 90);
+                                        }
+                                    }
+                                    item.receivedAt = UnixMsToLocal(atof(msg.GetString("internalDate").c_str()));
+                                    items.push_back(std::move(item));
+                                }
+                            }
+                        }
+                        std::reverse(items.begin(), items.end());  // stored oldest first
+                        {
+                            std::lock_guard lock(g_stateMutex);
+                            g_state.mail.unread = std::min(unread, 999);
+                            g_state.mail.recent = std::move(items);
+                            g_state.mail.status.clear();
+                        }
+                        g_layoutDirty = true;
+                    } else {
+                        Wh_Log(L"Gmail: INBOX request failed (HTTP %lu)", status);
+                        if (status == 401) accessToken.clear();
+                        SetGmailStatus(L"Erreur Gmail (HTTP " + std::to_wstring(status) + L")");
+                        waitMs = 30 * 1000;
+                    }
+                }
+            }
+        }
+        HANDLE events[] = {g_stopEvent, g_gmailWakeEvent};
+        if (WaitForMultipleObjects(g_gmailWakeEvent ? 2 : 1, events, FALSE, waitMs == INFINITE && !g_gmailWakeEvent ? 5000 : waitMs) == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+    return 0;
 }
 
 // ── Claude (status file written by the Claude Code hook) ─────────────────────
@@ -16857,8 +17218,13 @@ class Renderer {
         } else {
             right = Loc(L"Click to open");
         }
-        DrawIntegrationHeader(rect, scale, Loc(L"Mail"), right, mail.unread > 0 ? &material_.accent : nullptr);
+        DrawIntegrationHeader(rect, scale, mail.gmail ? std::wstring(L"Gmail") : std::wstring(Loc(L"Mail")), right,
+                              mail.unread > 0 ? &material_.accent : nullptr);
 
+        if (!mail.status.empty() && (mail.recent.empty() || !mail.gmailConnected)) {
+            DrawIntegrationMessage(rect, scale, mail.status);
+            return;
+        }
         if (mail.recent.empty()) {
             DrawIntegrationMessage(rect, scale, Loc(L"No new mail"));
             return;
@@ -25746,7 +26112,17 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
                 // Mail: clicking marks everything as seen and opens the mail app.
                 if (g_settings.mailModule && currentTab == MailTabIndex(g_settings)) {
-                    {
+                    if (g_settings.mailGmail) {
+                        bool connected = false;
+                        {
+                            std::lock_guard lock(g_stateMutex);
+                            connected = g_state.mail.gmailConnected;
+                        }
+                        if (!connected) {
+                            StartGmailSignIn();
+                            return 0;
+                        }
+                    } else {
                         std::lock_guard lock(g_stateMutex);
                         g_state.mail.unread = 0;
                     }
@@ -27253,6 +27629,8 @@ bool StartThreads() {
     g_todoistWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_todoistThread = CreateThread(nullptr, 0, TodoistThreadProc, nullptr, 0, nullptr);
     g_claudeThread = CreateThread(nullptr, 0, ClaudeStatusThreadProc, nullptr, 0, nullptr);
+    g_gmailWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_gmailThread = CreateThread(nullptr, 0, GmailThreadProc, nullptr, 0, nullptr);
     SubscribeDndNotification();
 
     return true;
@@ -27270,7 +27648,7 @@ void StopThreads() {
         SetEvent(g_stopEvent);
     }
 
-    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_lyricsThread, g_notificationThread, g_keyboardThread, g_mouseThread, g_bluetoothThread, g_todoistThread, g_claudeThread};
+    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_lyricsThread, g_notificationThread, g_keyboardThread, g_mouseThread, g_bluetoothThread, g_todoistThread, g_claudeThread, g_gmailThread};
     for (HANDLE handle : handles) {
         if (handle) {
             WaitForSingleObject(handle, 3000);
@@ -27291,6 +27669,11 @@ void StopThreads() {
     g_bluetoothThread = nullptr;
     g_todoistThread = nullptr;
     g_claudeThread = nullptr;
+    g_gmailThread = nullptr;
+    if (g_gmailWakeEvent) {
+        CloseHandle(g_gmailWakeEvent);
+        g_gmailWakeEvent = nullptr;
+    }
     if (g_todoistWakeEvent) {
         CloseHandle(g_todoistWakeEvent);
         g_todoistWakeEvent = nullptr;
