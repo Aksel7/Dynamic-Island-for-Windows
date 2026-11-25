@@ -546,9 +546,9 @@ We love community contributions! To ensure high-quality updates, please follow t
   - MailModule: false
     $name: Mail tab
     $description: Adds a Mail card that counts new mail notifications since you last opened it and lists the latest senders and subjects. Uses Windows notifications, so no account login is needed.
-  - MailApps: "outlook, mail, gmail, courrier, thunderbird"
+  - MailApps: "outlook, mail, gmail, courrier, thunderbird, mail.google.com, outlook.live.com, outlook.office.com"
     $name: Mail apps
-    $description: Comma-separated, matched against the app name of each Windows notification. Gmail in a browser only shows up as "Gmail" if installed as an app (Chrome or Edge menu > Install Gmail).
+    $description: Comma-separated, matched against the app name of each Windows notification. Entries with a dot (mail.google.com, outlook.live.com) are also matched against the notification text, which catches web mail notifications shown by Chrome or Edge. The mod log lists every notification it sees with its app name.
   - MailOpenTarget: "https://mail.google.com"
     $name: Mail tab click opens
     $description: URL or program opened when you click the Mail card. Clicking also resets the counter.
@@ -3162,7 +3162,8 @@ void ApplyBackdropMaterial(HWND);           // forward declaration; defined afte
 void NotifyKeyboardThreadSettingChanged();  // forward declaration; defined with the keyboard hook
 void RequestTodoistRefresh();               // forward declaration; defined with the integrations
 void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
-                      const std::wstring& subject, int sourcePath);  // same
+                      const std::wstring& subject, int sourcePath,
+                      const std::wstring& context = std::wstring());  // same
 void CompleteTodoistTask(const std::string& taskId);                 // same
 
 void ApplyLookupHotkey();  // forward declaration; defined with Quick Lookup
@@ -3515,7 +3516,7 @@ void LoadSettings() {
     {
         std::wstring raw = GetStringSettingCopy(L"Modules.MailApps");
         if (raw.empty()) {
-            raw = L"outlook, mail, gmail, courrier, thunderbird";
+            raw = L"outlook, mail, gmail, courrier, thunderbird, mail.google.com, outlook.live.com, outlook.office.com";
         }
         size_t start = 0;
         while (start <= raw.size()) {
@@ -6363,10 +6364,26 @@ DWORD WINAPI NotificationThreadProc(void*) {
                                     snapshot.body = textElements.GetAt(1).Text().c_str();
                                 }
                             }
+                            // Every text of the toast, attribution included
+                            // ("mail.google.com" on a Gmail toast from Chrome).
+                            std::wstring toastText;
+                            try {
+                                if (binding) {
+                                    for (const auto& element : binding.GetTextElements()) {
+                                        toastText += std::wstring(element.Text().c_str()) + L"\n";
+                                    }
+                                }
+                                for (const auto& b : notification.Visual().Bindings()) {
+                                    for (const auto& element : b.GetTextElements()) {
+                                        toastText += std::wstring(element.Text().c_str()) + L"\n";
+                                    }
+                                }
+                            } catch (...) {
+                            }
 
                             // Counted before the Do Not Disturb check on purpose:
                             // DnD silences the pill, not the mail counter.
-                            NoteIncomingMail(snapshot.app, snapshot.title, snapshot.body, 0);
+                            NoteIncomingMail(snapshot.app, snapshot.title, snapshot.body, 0, toastText);
                             if (g_settings.notificationRespectDnD && g_isDnDActive.load()) {
                                 continue;
                             }
@@ -9491,8 +9508,12 @@ DWORD WINAPI TodoistThreadProc(void*) {
 // the shell-hook fallback. Both paths can see the same toast, so a second
 // report from the *other* path within a few seconds is treated as the same
 // mail rather than counted twice.
+// `context` is all the toast's text. Browsers show web mail under their own
+// name ("Google Chrome"), so entries that look like a site (contain a dot,
+// e.g. mail.google.com) are also looked for in that text.
 void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
-                      const std::wstring& subject, int sourcePath) {
+                      const std::wstring& subject, int sourcePath,
+                      const std::wstring& context) {
     if (app.empty()) {
         return;
     }
@@ -9504,8 +9525,14 @@ void NoteIncomingMail(const std::wstring& app, const std::wstring& sender,
             return;
         }
         const std::wstring appLower = ToLowerCopy(app);
+        const std::wstring contextLower = ToLowerCopy(context);
         for (const std::wstring& needle : g_settings.mailApps) {
-            if (!needle.empty() && appLower.find(needle) != std::wstring::npos) {
+            if (needle.empty()) {
+                continue;
+            }
+            const bool isSite = needle.find(L'.') != std::wstring::npos;
+            if (appLower.find(needle) != std::wstring::npos ||
+                (isSite && contextLower.find(needle) != std::wstring::npos)) {
                 matched = true;
                 break;
             }
@@ -10756,7 +10783,7 @@ void CaptureShellNotification(HWND hwnd) {
                                 NoteIncomingMail(appName,
                                                  sep == std::wstring::npos ? fullText : fullText.substr(0, sep),
                                                  sep == std::wstring::npos ? std::wstring() : fullText.substr(sep + 5),
-                                                 1);
+                                                 1, fullText);
                             }
 
                             if (!fullText.empty()) {
