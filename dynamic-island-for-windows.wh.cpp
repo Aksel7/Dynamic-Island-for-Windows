@@ -6105,6 +6105,8 @@ DWORD WINAPI MediaThreadProc(void*) {
                         next.art = prevArt;
                         next.artGeneration = prevArtGeneration;
                         next.artChangedAt = prevArtChangedAt;
+                    } else if (!properties.Thumbnail() && metadataChanged) {
+                        Wh_Log(L"Media art: %s provides no thumbnail", next.sourceAppUserModelId.c_str());
                     } else if (auto thumbnail = properties.Thumbnail()) {
                         std::vector<uint8_t> bytes = ReadWinRtStreamBytes(thumbnail);
                         if (!bytes.empty() && prevArt && prevArt->sourceHash != 0 &&
@@ -6120,7 +6122,16 @@ DWORD WINAPI MediaThreadProc(void*) {
                                 next.art = PixelsRef(std::move(decoded));
                                 next.artGeneration = next.art->generation;
                                 next.artChangedAt = NowSeconds();
+                            } else if (metadataChanged) {
+                                // Usually an image format WIC has no codec for (e.g. WebP
+                                // without the Windows extension). First bytes tell which.
+                                Wh_Log(L"Media art: could not decode %zu bytes from %s (starts %02X %02X %02X %02X)",
+                                       bytes.size(), next.sourceAppUserModelId.c_str(),
+                                       bytes.size() > 0 ? bytes[0] : 0, bytes.size() > 1 ? bytes[1] : 0,
+                                       bytes.size() > 2 ? bytes[2] : 0, bytes.size() > 3 ? bytes[3] : 0);
                             }
+                        } else if (metadataChanged) {
+                            Wh_Log(L"Media art: %s sent an empty thumbnail", next.sourceAppUserModelId.c_str());
                         }
                     }
 
